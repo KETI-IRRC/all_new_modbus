@@ -1,0 +1,5 @@
+﻿type,name,value0,value1,value2,value3
+Group,KETI,-,,,
+Device,KETI.LS,LS Electronics & 통신 프로토콜,,,
+Station,KETI.Indy.STEP41,127.0.0.1,503,,
+Device,KETI.LS,LS Electronics & 통신 프로토콜,,,
