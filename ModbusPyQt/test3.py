@@ -1,15 +1,17 @@
 """
-Modbus‑TCP Monitor GUI (Qt for Python) – v0.5
+Modbus‑TCP Monitor GUI (Qt for Python) – v0.6
 ============================================
 Real‑time client for any Modbus‑TCP server.
 
 * PySide6 **or** PyQt6 (auto)
-* Auto‑scrolling log
-* Holding‑/Input‑Register value decode modes:
+* **Auto‑scroll** log
+* Adjustable **poll interval** (sec) – min 50 ms (MELSEC Q QJ71MT91 latency spec)
+* Holding‑/Input‑Register decode modes:
   • **word 16 +**   (uint16)
   • **word 16 +/‑** (int16)
-  • **dword 32 +**  (uint32 = low⋅1 | high≪16)
+  • **dword 32 +**  (uint32 = low | high≪16)
   • **dword 32 +/‑** (int32)
+* Timestamp log & CSV → **0.1 s** resolution
 
 Tested on Python 3.11 · pymodbus 3.9.2
 """
@@ -22,15 +24,15 @@ from typing import Optional, List
 # ── Qt autodetect ────────────────────────────────────────────
 try:
     from PySide6.QtWidgets import (
-        QApplication, QWidget, QLineEdit, QSpinBox, QComboBox, QPushButton,
-        QTextEdit, QFormLayout, QHBoxLayout, QMessageBox
+        QApplication, QWidget, QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox,
+        QPushButton, QTextEdit, QFormLayout, QHBoxLayout, QMessageBox
     )
     from PySide6.QtCore import Qt, Signal, QObject
     from PySide6.QtGui import QTextCursor
 except ModuleNotFoundError:
     from PyQt6.QtWidgets import (
-        QApplication, QWidget, QLineEdit, QSpinBox, QComboBox, QPushButton,
-        QTextEdit, QFormLayout, QHBoxLayout, QMessageBox
+        QApplication, QWidget, QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox,
+        QPushButton, QTextEdit, QFormLayout, QHBoxLayout, QMessageBox
     )
     from PyQt6.QtCore import Qt, pyqtSignal as Signal, QObject
     from PyQt6.QtGui import QTextCursor
@@ -66,11 +68,8 @@ class ModbusWorker(QObject):
     def _decode_regs(self, regs: List[int]) -> List[int]:
         if self.fmt.startswith("word"):
             return [self._u16_to_s16(r) if "+/-" in self.fmt else r for r in regs]
-        # dword – need pairs
         pairs = [(regs[i] | (regs[i+1] << 16)) for i in range(0, len(regs)-1, 2)]
-        if "+/-" in self.fmt:
-            return [self._u32_to_s32(v) for v in pairs]
-        return pairs
+        return [self._u32_to_s32(v) for v in pairs] if "+/-" in self.fmt else pairs
 
     # -------------------------
     async def run(self):
@@ -81,7 +80,8 @@ class ModbusWorker(QObject):
             csv_p = Path(f"modbus_log_{datetime.datetime.now():%Y%m%d_%H%M%S}.csv")
             with csv_p.open("w", newline="") as f:
                 writer = csv.writer(f)
-                writer.writerow(["timestamp"])
+                writer.writerow(["timestamp"] + [f"val{i}" for i in range(self.count)])
+                
                 while self._running:
                     if self.method in ("read_coils", "read_discrete_inputs"):
                         data = []
@@ -91,7 +91,8 @@ class ModbusWorker(QObject):
                     else:
                         rr = await getattr(client, self.method)(self.addr, count=self.count)
                         data = self._decode_regs(rr.registers if not rr.isError() else [])
-                    ts = datetime.datetime.now().isoformat(timespec="seconds")
+                    now = datetime.datetime.now()
+                    ts  = f"{now:%Y-%m-%dT%H:%M:%S}.{now.microsecond//100000}"
                     writer.writerow([ts]+data)
                     self.log_ready.emit(f"{ts}  {data}\n")
                     await asyncio.sleep(self.interval)
@@ -103,7 +104,7 @@ class ModbusWorker(QObject):
 # ─────────────────────────────── UI ─────────────────────────
 class MainWindow(QWidget):
     def __init__(self):
-        super().__init__(); self.setWindowTitle("Modbus‑TCP Monitor"); self.resize(720,480)
+        super().__init__(); self.setWindowTitle("Modbus‑TCP Monitor"); self.resize(760,520)
         self.worker: Optional[ModbusWorker] = None; self._build_ui()
 
     def _build_ui(self):
@@ -113,9 +114,11 @@ class MainWindow(QWidget):
         self.addr = QSpinBox(); self.addr.setRange(0,100000)
         self.cnt  = QSpinBox(); self.cnt.setRange(1,125)
         self.fmt  = QComboBox(); self.fmt.addItems(FMT_LIST)
+        self.interval = QDoubleSpinBox(); self.interval.setRange(0.05,60.0); self.interval.setSingleStep(0.05); self.interval.setValue(1.0); self.interval.setSuffix(" s")
         self._update_defaults(self.table.currentText()); self.table.currentTextChanged.connect(self._update_defaults)
         form.addRow("Server IP", self.ip); form.addRow("Port", self.port); form.addRow("Table", self.table)
         form.addRow("Start addr", self.addr); form.addRow("Count", self.cnt); form.addRow("Format", self.fmt)
+        form.addRow("Poll interval", self.interval)
         row = QHBoxLayout(); self.start = QPushButton("Start"); self.stop = QPushButton("Stop"); self.stop.setEnabled(False)
         row.addWidget(self.start); row.addWidget(self.stop); form.addRow(row)
         self.log = QTextEdit(); self.log.setReadOnly(True); form.addRow(self.log)
@@ -128,9 +131,12 @@ class MainWindow(QWidget):
     @qasync.asyncSlot()
     async def start_poll(self):
         if self.worker: return
+        if self.interval.value() < 0.05:
+            QMessageBox.warning(self, "Interval too low", "Min interval is 0.05 s (MELSEC Q latency limit).")
+            return
         mtd,_a,_c = TABLE_MAP[self.table.currentText()]
         self.worker = ModbusWorker(self.ip.text().strip(), self.port.value(), mtd,
-                                   self.addr.value(), self.cnt.value(), self.fmt.currentText())
+                                   self.addr.value(), self.cnt.value(), self.fmt.currentText(), self.interval.value())
         self.worker.log_ready.connect(self.append_log); self.worker.finished.connect(self.on_finished)
         self.start.setEnabled(False); self.stop.setEnabled(True)
         asyncio.create_task(self.worker.run())
@@ -150,6 +156,11 @@ class MainWindow(QWidget):
 
 # ───────────────────────── entry ────────────────────────────
 if __name__ == "__main__":
-    app = QApplication(sys.argv); loop = qasync.QEventLoop(app); asyncio.set_event_loop(loop)
+    app = QApplication(sys.argv)
+    loop = qasync.QEventLoop(app)
+    asyncio.set_event_loop(loop)
+
     win = MainWindow(); win.show()
-    with loop: loop.run_forever()
+
+    with loop:
+        loop.run_forever()

@@ -12,11 +12,11 @@ SLAVE_ID         = 0          # 서버가 single=True → ID 0
 def main():
     with ModbusTcpClient(SERVER_IP, port=PORT) as client:
         while True:
-            rr = client.read_coils(10, count=8, slave=SLAVE_ID)
+            rr = client.read_coils(0, count=8)
             if rr.isError():
                 print("❌", rr)
             else:
-                print("Coils 10-17:", rr.bits)
+                print("Coils 0-8:", rr.bits)
             time.sleep(1)
 
 if __name__ == "__main__":

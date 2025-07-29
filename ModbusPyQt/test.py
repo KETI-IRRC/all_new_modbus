@@ -64,7 +64,7 @@ class ModbusWorker(QObject):
 
     async def _read_bitwise(self, client, offset: int) -> int:
         """Read a single coil/DI (count=1) and return int 0/1."""
-        rr = await getattr(client, self.method)(offset, count=1, slave=1)
+        rr = await getattr(client, self.method)(offset, count=1)
         if rr.isError():
             self.log_ready.emit(f"Modbus 오류 @addr {offset}: {rr}\n")
             return -1  # sentinel
@@ -89,7 +89,7 @@ class ModbusWorker(QObject):
                         data_row = [await self._read_bitwise(client, self.addr + off)
                                     for off in range(self.count)]
                     else:
-                        rr = await getattr(client, self.method)(self.addr, count=self.count, slave=1)
+                        rr = await getattr(client, self.method)(self.addr, count=self.count)
                         if rr.isError():
                             self.log_ready.emit(f"Modbus 오류: {rr}\n"); data_row = []
                         else:
