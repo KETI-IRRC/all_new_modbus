@@ -25,6 +25,7 @@ import qasync
 MEM_METHOD = {
     "M": "read_coils",
     "L": "read_coils",
+    "Y": "read_coils", # Y 추가 
     "X": "read_discrete_inputs",
     "D": "read_holding_registers",
 }
